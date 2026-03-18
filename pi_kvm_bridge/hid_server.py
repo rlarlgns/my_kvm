@@ -1,21 +1,14 @@
 # pi_kvm_bridge/hid_server.py
 from flask import Flask, request, jsonify
-import json
-import socket
-import struct
-import time
-import sys
-import os
+import json, socket, struct, time, sys, os, threading
 from threading import Lock
 
-# Optional: serial for Linux connection
 try:
     import serial
     import serial.tools.list_ports
 except ImportError:
     serial = None
 
-# Import HID report codes
 from hid_report_codes import KEY_MAP, MODIFIER_MAP, MOUSE_BUTTON_MAP, ASCII_TO_HID
 
 app = Flask(__name__)
@@ -47,13 +40,39 @@ def get_serial_connection():
         try:
             if os.path.exists(SERIAL_PORT):
                 serial_conn = serial.Serial(SERIAL_PORT, SERIAL_BAUDRATE, timeout=0.1)
+                print(f"--- Serial Port {SERIAL_PORT} Opened ---", file=sys.stderr)
                 return serial_conn
         except: pass
     return None
 
-def check_serial_status():
-    conn = get_serial_connection()
-    return conn is not None and conn.is_open
+# Serial Reading Thread (To receive from Linux)
+def serial_reader_thread():
+    global serial_conn
+    while True:
+        ser = get_serial_connection()
+        if not ser:
+            time.sleep(2)
+            continue
+        try:
+            header = ser.read(1)
+            if not header: continue
+            
+            if header == b'\x04': # Heartbeat from Linux
+                with state_lock: state["last_linux_seen"] = time.time()
+            
+            elif header == b'\x03': # Clipboard from Linux
+                len_bytes = ser.read(2)
+                if len(len_bytes) == 2:
+                    clip_len = struct.unpack('<H', len_bytes)[0]
+                    clip_data = ser.read(clip_len).decode('utf-8', errors='ignore')
+                    with state_lock:
+                        state["clipboard_content"] = clip_data
+                        state["last_clipboard_source"] = "linux"
+                    print(f"Received Clipboard from Linux via Serial ({clip_len} bytes)", file=sys.stderr)
+        except Exception as e:
+            print(f"Serial Read Error: {e}", file=sys.stderr)
+            serial_conn = None
+            time.sleep(1)
 
 def send_to_mac_client(data):
     try:
@@ -123,17 +142,13 @@ def get_status():
     with state_lock:
         now = time.time()
         if client_id == 'mac': state["last_mac_seen"] = now
-        elif client_id == 'linux': state["last_linux_seen"] = now
-        
         mac_connected = (now - state["last_mac_seen"]) < 10
-        linux_client_connected = (now - state["last_linux_seen"]) < 10
-        linux_serial_connected = check_serial_status()
-        
+        linux_connected = (now - state["last_linux_seen"]) < 10 or (get_serial_connection() is not None)
         return jsonify({
             "kvm_target": state["kvm_target"],
             "server_status": "online",
             "mac_connected": mac_connected,
-            "linux_connected": linux_client_connected or linux_serial_connected,
+            "linux_connected": linux_connected,
             "clipboard_last_update": state["last_clipboard_source"]
         })
 
@@ -149,13 +164,23 @@ def switch_target():
 def handle_clipboard():
     if request.method == 'POST':
         data = request.get_json()
+        content, source = data.get("content", ""), data.get("source")
         with state_lock:
-            state["clipboard_content"] = data.get("content", "")
-            state["last_clipboard_source"] = data.get("source")
+            state["clipboard_content"] = content
+            state["last_clipboard_source"] = source
+        # If content came from Mac, push to Linux via Serial
+        if source == "mac":
+            ser = get_serial_connection()
+            if ser:
+                try:
+                    payload = content.encode('utf-8')
+                    ser.write(b'\x03' + struct.pack('<H', len(payload)) + payload)
+                except: pass
         return jsonify({"status": "success"})
     else:
         with state_lock:
             return jsonify({"content": state.get("clipboard_content", ""), "source": state["last_clipboard_source"]})
 
 if __name__ == '__main__':
+    threading.Thread(target=serial_reader_thread, daemon=True).start()
     app.run(host='0.0.0.0', port=5000)
