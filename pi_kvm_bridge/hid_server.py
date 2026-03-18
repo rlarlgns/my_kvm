@@ -20,11 +20,17 @@ from hid_report_codes import KEY_MAP, MODIFIER_MAP, MOUSE_BUTTON_MAP
 app = Flask(__name__)
 LINUX_KEYBOARD_GADGET_PATH = '/dev/hidg0'
 LINUX_MOUSE_GADGET_PATH = '/dev/hidg1'
-MAC_CLIENT_IP = '192.168.42.1'
-MAC_CLIENT_PORT = 5002 
 SERIAL_BAUDRATE = 115200
 
-state = {"kvm_target": "mac", "clipboard_content": "", "last_mac_seen": 0, "last_linux_seen": 0, "serial_port": None}
+state = {
+    "kvm_target": "mac", 
+    "clipboard_content": "", 
+    "last_mac_seen": 0, 
+    "last_linux_seen": 0, 
+    "serial_port": None,
+    "mac_client_ip": "192.168.42.1",
+    "mac_client_port": 5002
+}
 state_lock = Lock()
 serial_conn = None
 
@@ -65,8 +71,17 @@ def serial_reader():
 @app.route('/input', methods=['POST'])
 def handle_input():
     data = request.get_json()
-    with state_lock: target = state["kvm_target"]
+    with state_lock: 
+        target = state["kvm_target"]
+        mac_ip = state["mac_client_ip"]
+        mac_port = state["mac_client_port"]
+        
+    # Log incoming events for debugging
+    if data.get("type") == "keyboard":
+        log_msg(f"Input: {data.get('action')} keys={data.get('keys')} target={target}")
+
     if target == 'linux':
+        log_msg(f"Forwarding to Linux (Serial): {data.get('keys')}")
         ser = get_serial_connection()
         if data.get("type") == "keyboard":
             modifiers = sum(MODIFIER_MAP.get(k.upper(), 0) for k in data.get("keys", []))
@@ -77,12 +92,13 @@ def handle_input():
             if ser:
                 try: ser.write(b'\x01' + report); ser.flush()
                 except: pass
-        # Mouse logic...
     elif target == 'mac':
+        log_msg(f"Forwarding to Mac (UDP {mac_ip}): {data.get('keys')}")
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.sendto(json.dumps(data).encode(), (MAC_CLIENT_IP, MAC_CLIENT_PORT))
-        except: pass
+                s.sendto(json.dumps(data).encode(), (mac_ip, mac_port))
+        except Exception as e:
+            log_msg(f"UDP Send Error: {e}")
     return jsonify({"status": "success"})
 
 @app.route('/status')
@@ -90,8 +106,15 @@ def get_status():
     cid = request.args.get('id')
     with state_lock:
         now = time.time()
-        if cid == 'mac': state["last_mac_seen"] = now
+        if cid == 'mac': 
+            state["last_mac_seen"] = now
+            # Update IP if it's not a loopback address
+            remote_ip = request.remote_addr
+            if remote_ip and remote_ip != '127.0.0.1':
+                state["mac_client_ip"] = remote_ip
+            
         return jsonify({
+            "server_status": "online",
             "kvm_target": state["kvm_target"],
             "mac_connected": (now - state["last_mac_seen"]) < 10,
             "linux_connected": (now - state["last_linux_seen"]) < 10,
