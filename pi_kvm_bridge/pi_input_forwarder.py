@@ -21,23 +21,21 @@ EVDEV_MOUSE_BUTTON_TO_STRING_MAP = { ecodes.BTN_LEFT: 'LEFT', ecodes.BTN_RIGHT: 
 
 def send_to_hid_server(payload):
     try: 
-        resp = requests.post(f"{HID_SERVER_URL}/input", json=payload, timeout=0.1)
-        if resp.status_code != 200:
-            print(f"Error: Server returned {resp.status_code}")
-    except Exception as e: 
-        print(f"Failed to send to server: {e}")
+        requests.post(f"{HID_SERVER_URL}/input", json=payload, timeout=0.1)
+    except: pass
 
 async def handle_keyboard_events(device):
     print(f"Monitoring Keyboard: {device.name} ({device.path})")
     async for event in device.async_read_loop():
         if event.type != ecodes.EV_KEY: continue
         key_event = categorize(event)
-        if key_event.keystate == 2: continue # Ignore repeat
         
         scancode = key_event.scancode
         is_down = key_event.keystate == 1
+        is_repeat = key_event.keystate == 2
+        is_up = key_event.keystate == 0
         
-        # Deduplication
+        # Deduplication and Toggle logic
         if is_down:
             if scancode in pressed_keys: continue
             pressed_keys.add(scancode)
@@ -46,17 +44,18 @@ async def handle_keyboard_events(device):
                 requests.post(f"{HID_SERVER_URL}/switch_target", json={"target": "toggle"})
                 pressed_keys.clear()
                 continue
-        else:
+        elif is_up:
             if scancode not in pressed_keys: continue
             pressed_keys.discard(scancode)
-
+        
+        # Send press for both 1 (initial) and 2 (repeat)
         hid_key = EVDEV_KEY_TO_HID_SERVER_KEY_MAP.get(scancode)
         if hid_key:
-            print(f"[Key] {hid_key} ({'press' if is_down else 'release'})")
+            action = "press" if (is_down or is_repeat) else "release"
             send_to_hid_server({
                 "type": "keyboard",
                 "keys": [hid_key],
-                "action": "press" if is_down else "release"
+                "action": action
             })
 
 async def handle_mouse_events(device):
@@ -96,6 +95,6 @@ async def find_devices():
         await asyncio.sleep(2)
 
 if __name__ == "__main__":
-    print("--- Pi Input Forwarder Started (Deduplicated) ---")
+    print("--- Pi Input Forwarder Started (with Repeats) ---")
     try: asyncio.run(find_devices())
     except KeyboardInterrupt: pass

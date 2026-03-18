@@ -183,13 +183,15 @@ def run_mac_node():
                 if p.get("type") == "keyboard":
                     for ks in p.get("keys", []):
                         pk = MAC_KB_MAP.get(ks)
+                        action = p.get("action")
                         if pk:
                             try:
-                                if p.get("action") == "press" and pk not in pressed:
-                                    keyboard_controller.press(pk); pressed.add(pk)
-                                    print(f"[Key] Pressed {ks}")
-                                elif p.get("action") == "release" and pk in pressed:
-                                    keyboard_controller.release(pk); pressed.discard(pk)
+                                if action == "press":
+                                    keyboard_controller.press(pk)
+                                    pressed.add(pk)
+                                elif action == "release" and pk in pressed:
+                                    keyboard_controller.release(pk)
+                                    pressed.discard(pk)
                                     print(f"[Key] Released {ks}")
                             except: pass
                 elif p.get("type") == "mouse":
