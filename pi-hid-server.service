@@ -1,0 +1,15 @@
+[Unit]
+Description=Pi KVM Bridge HID Event Server
+After=network.target hid-gadget-setup.service
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/pi-kvm-bridge/pi_kvm_bridge/hid_server.py
+WorkingDirectory=/opt/pi-kvm-bridge/pi_kvm_bridge/
+Restart=always
+User=pi
+Group=pi
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

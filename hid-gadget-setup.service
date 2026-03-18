@@ -1,0 +1,13 @@
+[Unit]
+Description=Setup USB HID Gadget for KVM Bridge
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/pi-kvm-bridge/setup_hid_gadget_linux.sh
+StandardOutput=journal
+User=root
+
+[Install]
+WantedBy=multi-user.target

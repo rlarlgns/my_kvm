@@ -1,0 +1,4 @@
+Flask
+evdev
+requests
+pyserial

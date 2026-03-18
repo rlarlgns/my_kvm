@@ -1,0 +1,6 @@
+# Add the following lines to /boot/config.txt
+# Enable dwc2 overlay for USB gadget mode
+dtoverlay=dwc2
+
+# Optional: Increase USB current if needed
+# usb_max_current_enable=1

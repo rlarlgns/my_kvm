@@ -1,0 +1,29 @@
+# .gitignore 파일 내용
+# 파이썬 관련
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python/
+env/
+venv/
+.venv/
+
+# PyInstaller 빌드 관련
+build/
+dist/
+*.spec
+
+# IDE 관련
+.idea/          # IntelliJ / PyCharm
+.vscode/        # VS Code
+
+# 운영체제 관련
+.DS_Store       # macOS
+Thumbs.db       # Windows
+ehthumbs.db     # Windows
+*.log           # 로그 파일
+
+# 임시 파일
+*~
+#*#
