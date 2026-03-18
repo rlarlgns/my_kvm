@@ -1,22 +1,14 @@
 # pi_kvm_bridge/pi_input_forwarder.py
 import asyncio
 from evdev import InputDevice, categorize, ecodes, util
-import requests
-import json
-import time
-import os
-import sys
+import requests, json, os, sys
 
-# --- Configuration ---
 HID_SERVER_URL = "http://127.0.0.1:5000"
 TOGGLE_KEYS = {ecodes.KEY_LEFTSHIFT, ecodes.KEY_LEFTCTRL, ecodes.KEY_F12}
 
-# --- State ---
 pressed_keys = set()
 current_target = "linux"
 
-# --- Mappings ---
-# (EVDEV_KEY_TO_HID_SERVER_KEY_MAP remains the same as before)
 EVDEV_KEY_TO_HID_SERVER_KEY_MAP = {
     ecodes.KEY_A: 'A', ecodes.KEY_B: 'B', ecodes.KEY_C: 'C', ecodes.KEY_D: 'D', ecodes.KEY_E: 'E', ecodes.KEY_F: 'F', ecodes.KEY_G: 'G', ecodes.KEY_H: 'H', ecodes.KEY_I: 'I', ecodes.KEY_J: 'J', ecodes.KEY_K: 'K', ecodes.KEY_L: 'L', ecodes.KEY_M: 'M', ecodes.KEY_N: 'N', ecodes.KEY_O: 'O', ecodes.KEY_P: 'P', ecodes.KEY_Q: 'Q', ecodes.KEY_R: 'R', ecodes.KEY_S: 'S', ecodes.KEY_T: 'T', ecodes.KEY_U: 'U', ecodes.KEY_V: 'V', ecodes.KEY_W: 'W', ecodes.KEY_X: 'X', ecodes.KEY_Y: 'Y', ecodes.KEY_Z: 'Z',
     ecodes.KEY_1: '1', ecodes.KEY_2: '2', ecodes.KEY_3: '3', ecodes.KEY_4: '4', ecodes.KEY_5: '5', ecodes.KEY_6: '6', ecodes.KEY_7: '7', ecodes.KEY_8: '8', ecodes.KEY_9: '9', ecodes.KEY_0: '0',
@@ -27,51 +19,39 @@ EVDEV_KEY_TO_HID_SERVER_KEY_MAP = {
 }
 EVDEV_MOUSE_BUTTON_TO_STRING_MAP = { ecodes.BTN_LEFT: 'LEFT', ecodes.BTN_RIGHT: 'RIGHT', ecodes.BTN_MIDDLE: 'MIDDLE' }
 
-
 def send_to_hid_server(payload):
-    try:
-        requests.post(f"{HID_SERVER_URL}/input", json=payload, timeout=0.5)
-    except requests.RequestException:
-        pass # Suppress errors for speed
-
-def switch_target():
-    global current_target
-    current_target = "mac" if current_target == "linux" else "linux"
-    try:
-        requests.post(f"{HID_SERVER_URL}/target", json={"target": current_target}, timeout=1.0)
-        print(f"--- Target switched to: {current_target.upper()} ---", flush=True)
-    except requests.RequestException as e:
-        print(f"Error switching target: {e}", file=sys.stderr)
-
+    try: requests.post(f"{HID_SERVER_URL}/input", json=payload, timeout=0.2)
+    except: pass
 
 async def handle_keyboard_events(device):
+    print(f"Monitoring Keyboard: {device.name}")
     async for event in device.async_read_loop():
-        if event.type != ecodes.EV_KEY:
-            continue
-        
+        if event.type != ecodes.EV_KEY: continue
         key_event = categorize(event)
-        key_code = key_event.scancode
         
-        if key_event.keystate == key_event.key_down:
-            pressed_keys.add(key_code)
+        # 0: Up, 1: Down, 2: Hold (Repeat)
+        # 키 반복(2) 신호는 무시하여 중복 입력 방지
+        if key_event.keystate == 2: continue
+        
+        scancode = key_event.scancode
+        if key_event.keystate == 1: # Down
+            pressed_keys.add(scancode)
             if TOGGLE_KEYS.issubset(pressed_keys):
-                switch_target()
-                # To prevent hotkey from being sent to target, we can clear the set
-                pressed_keys.clear() 
-                continue
-        elif key_event.keystate == key_event.key_up:
-            pressed_keys.discard(key_code)
+                requests.post(f"{HID_SERVER_URL}/switch_target", json={"target": "toggle"})
+                pressed_keys.clear(); continue
+        else: # Up (0)
+            pressed_keys.discard(scancode)
 
-        hid_key = EVDEV_KEY_TO_HID_SERVER_KEY_MAP.get(key_code)
+        hid_key = EVDEV_KEY_TO_HID_SERVER_KEY_MAP.get(scancode)
         if hid_key:
-            payload = {
+            send_to_hid_server({
                 "type": "keyboard",
                 "keys": [hid_key],
-                "action": "press" if key_event.keystate == key_event.key_down else "release"
-            }
-            send_to_hid_server(payload)
+                "action": "press" if key_event.keystate == 1 else "release"
+            })
 
 async def handle_mouse_events(device):
+    print(f"Monitoring Mouse: {device.name}")
     async for event in device.async_read_loop():
         payload = {"type": "mouse"}
         if event.type == ecodes.EV_REL:
@@ -79,47 +59,32 @@ async def handle_mouse_events(device):
             elif event.code == ecodes.REL_Y: payload["dy"] = event.value
             elif event.code == ecodes.REL_WHEEL: payload["scroll"] = -event.value
         elif event.type == ecodes.EV_KEY:
-            button = EVDEV_MOUSE_BUTTON_TO_STRING_MAP.get(event.code)
-            if button:
-                payload["buttons"] = [button]
+            btn = EVDEV_MOUSE_BUTTON_TO_STRING_MAP.get(event.code)
+            if btn:
+                payload["buttons"] = [btn]
                 payload["action"] = "press" if event.value == 1 else "release"
-        
-        if len(payload) > 1:
-            send_to_hid_server(payload)
+        if len(payload) > 1: send_to_hid_server(payload)
 
-async def find_and_monitor_devices():
-    tasks = []
-    seen_devices = set()
-    print("Scanning for input devices...")
+async def find_devices():
+    seen = set()
     while True:
-        devices = [InputDevice(path) for path in util.list_devices() if path not in seen_devices]
-        for device in devices:
-            is_keyboard = ecodes.EV_KEY in device.capabilities() and ecodes.KEY_A in device.capabilities().get(ecodes.EV_KEY, set())
-            is_mouse = ecodes.EV_REL in device.capabilities() and ecodes.REL_X in device.capabilities().get(ecodes.EV_REL, set())
-
-            if is_keyboard:
-                print(f"Monitoring Keyboard: {device.name}")
-                tasks.append(asyncio.create_task(handle_keyboard_events(device)))
-                seen_devices.add(device.path)
-            if is_mouse:
-                print(f"Monitoring Mouse: {device.name}")
-                tasks.append(asyncio.create_task(handle_mouse_events(device)))
-                seen_devices.add(device.path)
-        
-        if not tasks:
-            print("No input devices found yet. Retrying in 5 seconds...", file=sys.stderr)
-
+        for path in util.list_devices():
+            if path in seen: continue
+            try:
+                dev = InputDevice(path)
+                caps = dev.capabilities()
+                is_k = ecodes.EV_KEY in caps and ecodes.KEY_A in caps[ecodes.EV_KEY]
+                is_m = ecodes.EV_REL in caps and ecodes.REL_X in caps[ecodes.EV_REL]
+                if is_k:
+                    asyncio.create_task(handle_keyboard_events(dev))
+                    seen.add(path)
+                elif is_m:
+                    asyncio.create_task(handle_mouse_events(dev))
+                    seen.add(path)
+            except: pass
         await asyncio.sleep(5)
 
-
 if __name__ == "__main__":
-    if os.geteuid() != 0:
-        print("Warning: This script should be run with root privileges for input device access.", file=sys.stderr)
-    
-    print("--- Starting Pi Internal Input Forwarder ---")
-    print(f"Hotkey to toggle target: { {ecodes.KEY[k] for k in TOGGLE_KEYS} }")
-    
-    try:
-        asyncio.run(find_and_monitor_devices())
-    except KeyboardInterrupt:
-        print("\nExiting.")
+    print("--- Pi Input Forwarder Started (Deduplicated) ---")
+    try: asyncio.run(find_devices())
+    except KeyboardInterrupt: pass

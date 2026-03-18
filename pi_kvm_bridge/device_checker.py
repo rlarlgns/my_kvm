@@ -1,40 +1,33 @@
-# device_checker.py
+# pi_kvm_bridge/device_checker.py
 import os
-from evdev import InputDevice, ecodes
+from evdev import InputDevice, util
 
-print("--- Checking Input Device Capabilities ---")
+print("--- Checking Raspberry Pi Devices ---")
 
-# Path to the input devices
-dev_input_path = "/dev/input/"
+# 1. Check HID Input Devices
+print("\n[Input Devices]")
+devices = [InputDevice(path) for path in util.list_devices()]
+if not devices:
+    print("No input devices found.")
+for device in devices:
+    print(f"- {device.path}: {device.name}")
 
-# List all potential event devices
-event_devices = [os.path.join(dev_input_path, f) for f in os.listdir(dev_input_path) if f.startswith('event')] 
+# 2. Check Serial Ports
+print("\n[Serial Ports]")
+serial_ports = ['/dev/ttyUSB0', '/dev/ttyUSB1', '/dev/ttyACM0', '/dev/ttyACM1']
+found_serial = False
+for p in serial_ports:
+    if os.path.exists(p):
+        print(f"- {p}: EXISTS")
+        found_serial = True
+if not found_serial:
+    print("No common serial ports found.")
 
-if not event_devices:
-    print("No event devices found in /dev/input/")
-else:
-    for device_path in sorted(event_devices):
-        try:
-            device = InputDevice(device_path)
-            print(f"\n--- Device: {device_path} ---")
-            print(f"Name: {device.name}")
-            print("Capabilities:")
-            for cap_type, cap_codes in device.capabilities(verbose=True).items():
-                cap_name = ecodes.EV[cap_type]
-                print(f"  - {cap_name}:")
-                # Don't print all keys if it's a huge list
-                if cap_name == 'EV_KEY' and len(cap_codes) > 20:
-                     print(f"    - Numerous keys ({len(cap_codes)} total)")
-                     if ecodes.KEY_A in cap_codes:
-                         print("    - (Contains KEY_A)")
-                     if ecodes.KEY_LEFTSHIFT in cap_codes:
-                         print("    - (Contains KEY_LEFTSHIFT)")
-                else:
-                    # To keep it simple, just print the number of codes
-                    print(f"    - ({len(cap_codes)} codes)")
-
-
-        except Exception as e:
-            print(f"\n--- Could not inspect {device_path}: {e} ---")
+# 3. Check HID Gadgets (Targeting Linux via USB OTG)
+print("\n[HID Gadgets]")
+gadgets = ['/dev/hidg0', '/dev/hidg1']
+for g in gadgets:
+    status = "READY" if os.path.exists(g) else "NOT FOUND"
+    print(f"- {g}: {status}")
 
 print("\n--- Check Complete ---")
